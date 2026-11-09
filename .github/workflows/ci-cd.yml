@@ -1,0 +1,106 @@
+# CI/CD — factos-TRAVEL (travel-svc)
+#
+#   PR:        테스트 + 비밀값 검사 + arm64 이미지 빌드·취약점 검사 (배포 안 함)
+#   main push: 위가 모두 통과하면 이미지를 GHCR에 올리고 서버 compose에 배포
+#
+#   test ─┐
+#         ├─▶ image (arm64 빌드 → Trivy → push) ─▶ deploy (deploy.sh travel <sha>)
+#   gitleaks ┘
+#
+# 보안 게이트: gitleaks(커밋 기록에 비밀값) · Trivy(이미지에 고칠 수 있는 HIGH/CRITICAL 취약점)
+# 하나라도 걸리면 이미지를 올리지 않고 배포도 하지 않는다.
+# 서버 쪽 헬스체크·롤백은 factos-BE의 infra/compose/deploy.sh가 한다 (compose 설정도 factos-BE가 보낸다).
+
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/factos-travel
+  SERVICE: travel
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # 테스트가 Testcontainers로 PostGIS·Redis를 직접 띄운다 (러너에 Docker가 있다)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build & test
+        run: ./gradlew build
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 지금 파일만이 아니라 커밋 기록 전체를 본다
+      - name: Scan git history for secrets
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.24.2 git /repo --no-banner --redact -v
+
+  image:
+    needs: [test, gitleaks]
+    # 운영 서버(Oracle A1)가 arm64라 arm64 러너에서 바로 빌드한다 (에뮬레이션 없이)
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # .trivyignore: 해당 없음을 확인하고 만료일을 단 예외 (Spring 6.2에 수정판이 없는 2건)
+      - name: Trivy — 고칠 수 있는 HIGH/CRITICAL이 있으면 실패
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/repo:ro" aquasec/trivy:0.58.1 \
+            image --severity CRITICAL,HIGH --ignore-unfixed --scanners vuln --exit-code 1 \
+            --ignorefile /repo/.trivyignore "${IMAGE}:${GITHUB_SHA}"
+
+      - name: Push to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "${IMAGE}:${GITHUB_SHA}" "${IMAGE}:latest"
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"
+
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # 배포 중 또 push해도 겹치지 않게 순서대로
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.OCI_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.OCI_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.OCI_USER }}@${{ secrets.OCI_HOST }}" \
+            "/opt/factos/compose/deploy.sh ${SERVICE} ${GITHUB_SHA}"
