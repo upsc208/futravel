@@ -1,0 +1,13 @@
+{
+  "version": 0.6,
+  "elements": [
+    {"type": "node", "id": 101, "lat": 51.5560, "lon": -0.1080,
+     "tags": {"amenity": "pub", "name": "The Gunners", "addr:housenumber": "204", "addr:street": "Blackstock Road", "addr:postcode": "N5 1EN",
+              "opening_hours": "Mo-Su 12:00-23:00", "live_sport": "yes", "sport": "billiards", "website": "https://example.com/gunners"}},
+    {"type": "way", "id": 202, "center": {"lat": 51.5586, "lon": -0.1059},
+     "tags": {"amenity": "bar", "name": "Corner Bar", "contact:website": "http://example.com/corner", "sport": "billiards"}},
+    {"type": "node", "id": 303, "lat": 51.5, "lon": -0.1, "tags": {"amenity": "pub"}},
+    {"type": "node", "id": 404, "lat": 51.51, "lon": -0.11, "tags": {"amenity": "pub", "name": "Closed Arms", "opening_hours": "closed"}},
+    {"type": "node", "id": 505, "lat": 51.4820, "lon": -0.1900, "tags": {"amenity": "pub", "name": "Fulham Tap", "website": "javascript:alert(1)"}}
+  ]
+}

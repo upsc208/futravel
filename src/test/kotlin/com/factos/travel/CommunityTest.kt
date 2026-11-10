@@ -1,24 +1,19 @@
 package com.factos.travel
 
+import com.factos.travel.FakeFootball.as_
+import com.factos.travel.FakeFootball.jwt
+import com.factos.travel.FakeFootball.login
+import com.factos.travel.FakeFootball.meByToken
+import com.factos.travel.FakeFootball.meCalls
+import com.factos.travel.FakeFootball.meJson
+import com.factos.travel.FakeFootball.otherKey
 import com.factos.travel.community.PostCommentRepository
 import com.factos.travel.community.PostRepository
 import com.factos.travel.event.EventConsumer
 import com.factos.travel.fixture.ProcessedEventRepository
 import com.factos.travel.member.MemberProfileRepository
-import com.nimbusds.jose.JOSEObjectType
-import com.nimbusds.jose.JWSAlgorithm
-import com.nimbusds.jose.JWSHeader
-import com.nimbusds.jose.crypto.ECDSASigner
-import com.nimbusds.jose.jwk.Curve
-import com.nimbusds.jose.jwk.ECKey
-import com.nimbusds.jose.jwk.JWKSet
-import com.nimbusds.jose.jwk.gen.ECKeyGenerator
-import com.nimbusds.jwt.JWTClaimsSet
-import com.nimbusds.jwt.SignedJWT
-import com.sun.net.httpserver.HttpServer
 import jakarta.servlet.http.Cookie
 import org.assertj.core.api.Assertions.assertThat
-import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -31,15 +26,10 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import java.net.InetSocketAddress
-import java.time.Instant
 import java.time.OffsetDateTime
-import java.util.Date
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -54,54 +44,9 @@ import java.util.concurrent.atomic.AtomicLong
 class CommunityTest {
 
     companion object {
-        private val key: ECKey = ECKeyGenerator(Curve.P_256).keyIDFromThumbprint(true).generate()
-        private val otherKey: ECKey = ECKeyGenerator(Curve.P_256).keyIDFromThumbprint(true).generate()
-        /** 쿠키 값 → /api/auth/me 응답 (football-svc가 아는 로그인) */
-        val meByToken = ConcurrentHashMap<String, String>()
-        val meCalls = AtomicLong()
-
-        private val server: HttpServer = HttpServer.create(InetSocketAddress(0), 0).apply {
-            createContext("/.well-known/jwks.json") { ex ->
-                val body = JWKSet(key.toPublicJWK()).toString().toByteArray()
-                ex.responseHeaders.add("Content-Type", "application/json")
-                ex.sendResponseHeaders(200, body.size.toLong())
-                ex.responseBody.use { it.write(body) }
-            }
-            createContext("/api/auth/me") { ex ->
-                meCalls.incrementAndGet()
-                val token = ex.requestHeaders.getFirst("Cookie").orEmpty().substringAfter("factos_session=", "")
-                val body = meByToken[token]?.toByteArray()
-                if (body == null) {
-                    ex.sendResponseHeaders(401, -1); ex.close()
-                } else {
-                    ex.responseHeaders.add("Content-Type", "application/json")
-                    ex.sendResponseHeaders(200, body.size.toLong())
-                    ex.responseBody.use { it.write(body) }
-                }
-            }
-            start()
-        }
-
         @JvmStatic
         @DynamicPropertySource
-        fun football(registry: DynamicPropertyRegistry) {
-            registry.add("travel.football.base-url") { "http://localhost:${server.address.port}" }
-        }
-
-        @JvmStatic
-        @AfterAll
-        fun stop() = server.stop(0)
-
-        fun jwt(memberId: Long, signWith: ECKey = key, issuer: String = "factos", expiresIn: Long = 3600): String =
-            SignedJWT(
-                JWSHeader.Builder(JWSAlgorithm.ES256).keyID(signWith.keyID).type(JOSEObjectType.JWT).build(),
-                JWTClaimsSet.Builder().issuer(issuer).subject(memberId.toString())
-                    .issueTime(Date()).expirationTime(Date.from(Instant.now().plusSeconds(expiresIn))).build(),
-            ).apply { sign(ECDSASigner(signWith)) }.serialize()
-
-        fun meJson(id: Long, nickname: String, completed: Boolean = true, role: String = "MEMBER", suspendedUntil: String? = null) =
-            """{"id":$id,"nickname":"$nickname","profileImageUrl":null,"provider":"KAKAO","favoriteTeam":"arsenal","signupCompleted":$completed,
-               "role":"$role","adminClub":null,"suspendedUntil":${suspendedUntil?.let { "\"$it\"" } ?: "null"},"suspensionReason":null}"""
+        fun football(registry: DynamicPropertyRegistry) = FakeFootball.register(registry)
     }
 
     @Autowired private lateinit var mvc: MockMvc
@@ -117,12 +62,6 @@ class CommunityTest {
     fun setUp() {
         comments.deleteAll(); posts.deleteAll(); profiles.deleteAll(); processed.deleteAll(); meByToken.clear()
     }
-
-    private fun login(id: Long, nickname: String, completed: Boolean = true, role: String = "MEMBER"): String =
-        jwt(id).also { meByToken[it] = meJson(id, nickname, completed, role) }
-
-    private fun MockHttpServletRequestBuilder.as_(token: String) =
-        cookie(Cookie("factos_session", token)).header("Origin", "http://localhost:3000")
 
     private fun write(token: String, title: String = "에미레이츠 직관 후기", category: String = "REVIEW") =
         post("/api/travel/posts").as_(token).contentType(MediaType.APPLICATION_JSON)
