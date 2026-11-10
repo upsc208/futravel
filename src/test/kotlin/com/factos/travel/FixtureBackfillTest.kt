@@ -13,6 +13,7 @@ import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 처음 뜰 때 football-svc REST API로 일정을 받아 둔다. football-svc는 로컬 가짜 서버로 대신한다
@@ -24,17 +25,24 @@ import java.net.InetSocketAddress
 class FixtureBackfillTest {
 
     companion object {
+        /** 토트넘은 이 횟수만큼 연결 실패(503)를 흉내 낸다 — football-svc가 같이 재시작되는 중 */
+        private val tottenhamFailures = AtomicInteger(0)
+
         private val server: HttpServer = HttpServer.create(InetSocketAddress(0), 0).apply {
             createContext("/api/matches/clubs/") { ex ->
                 val club = ex.requestURI.path.split("/")[4]
                 val body = when (club) {
                     "arsenal" -> """[{"matchId":"5795523","opponent":"Newcastle","matchDate":"2099-11-22T02:30:00+09:00","isHome":false,"tournament":"프리미어리그"},
                                     {"matchId":"6106259","opponent":"Dortmund","matchDate":"2099-11-25T05:00:00+09:00","isHome":true,"tournament":"챔피언스리그"}]"""
+                    "tottenham" -> """[{"matchId":"7000001","opponent":"Fulham","matchDate":"2099-11-29T00:00:00+09:00","isHome":true,"tournament":"프리미어리그"}]"""
                     "chelsea" -> """[{"matchId":null,"opponent":"Leeds","matchDate":"2099-11-22T00:00:00+09:00","isHome":true,"tournament":"프리미어리그"}]"""
                     else -> "[]"
                 }.toByteArray()
                 ex.responseHeaders.add("Content-Type", "application/json")
                 // 리버풀은 football-svc 오류를 흉내 낸다 — 다른 팀은 계속 받아야 한다
+                if (club == "tottenham" && tottenhamFailures.getAndDecrement() > 0) {
+                    ex.sendResponseHeaders(503, -1); ex.close(); return@createContext
+                }
                 if (club == "liverpool") ex.sendResponseHeaders(500, -1) else ex.sendResponseHeaders(200, body.size.toLong())
                 ex.responseBody.use { if (club != "liverpool") it.write(body) }
             }
@@ -67,5 +75,13 @@ class FixtureBackfillTest {
 
         backfill.backfill() // 다시 받아도 늘어나지 않는다 (upsert)
         assertThat(fixtures.findAll().count { it.club == "arsenal" }).isEqualTo(2)
+    }
+
+    @Test
+    fun `football-svc가 아직 안 떴으면 못 받은 팀만 다시 시도한다`() {
+        tottenhamFailures.set(2)
+        backfill.backfill(maxAttempts = 4)
+        assertThat(fixtures.findAll().filter { it.club == "tottenham" }.map { it.opponent }).containsExactly("Fulham")
+        assertThat(tottenhamFailures.get()).isLessThanOrEqualTo(0)
     }
 }

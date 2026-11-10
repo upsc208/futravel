@@ -34,7 +34,7 @@ football-svc(`../factos-BE`)와 **독립된 애플리케이션**이다 (MSA).
 - 펍 정보 붙이기 `PUT /pubs/{id}` (팀 팬 펍·중계·메모, 숨기기는 전체 관리자) — 팀 관리자는 "팀 없음"이거나 자기 팀 펍만
 - 회원 제보 `POST /reports` (ITEM 가격·새 항목 / PUB 팬 펍·중계·메모, 30초에 한 번, 대기 20건까지) → `GET /reports`, `POST /reports/{id}/approve|reject` (관리자, 승인하면 반영)
 - 운영 관리자 `POST /admin/pubs`, `DELETE /admin/pubs/{id}` (OSM 펍은 숨김), `POST|GET /admin/pubs/import?area=` (OSM 다시 받기) — `X-Admin-Key` (`TRAVEL_ADMIN_KEY`, 비면 잠김)
-- 헬스: `/actuator/health` (nginx는 밖에 내지 않는다)
+- 헬스: `/actuator/health`, 운영 통계: `/actuator/prometheus` (둘 다 nginx는 밖에 내지 않는다. Grafana "축구 여행" 대시보드는 DB를 읽기 전용 계정으로 직접 읽는다 — 테이블·열 이름을 바꾸면 factos-BE `infra/compose/monitoring/grafana/gen-dashboards.js`도 고친다)
 
 ## 데이터 출처
 

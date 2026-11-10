@@ -50,34 +50,51 @@ class FootballClient(@Value("\${travel.football.base-url}") baseUrl: String) {
 /**
  * 처음 뜰 때 football-svc API로 팀별 일정을 한 번 받아 둔다.
  * 이벤트는 "바뀐 것"만 오므로, 이 서비스가 처음 생겼거나 오래 꺼져 있었으면 API로 채워야 한다.
- * 실패해도 앱은 뜬다 (이벤트로 따라잡는다).
+ * football-svc와 같이 재시작되면 처음엔 연결이 안 되므로, 못 받은 팀만 간격을 늘려 가며 다시 시도한다
+ * (기본 10초부터 두 배, 최대 2분 간격으로 8번 ≈ 10분). 끝내 실패해도 앱은 뜬다 (이벤트로 따라잡는다).
  */
 @Component
 class FixtureBackfill(
     private val football: FootballClient,
     private val fixtures: FixtureService,
     @Value("\${travel.football.backfill-on-start:true}") private val enabled: Boolean,
+    @Value("\${travel.football.backfill-attempts:8}") private val attempts: Int,
+    @Value("\${travel.football.backfill-retry-base-ms:10000}") private val retryBaseMs: Long,
 ) : ApplicationRunner {
     private val log = LoggerFactory.getLogger(javaClass)
 
     override fun run(args: ApplicationArguments) {
         if (!enabled) return
-        Thread({ backfill() }, "fixture-backfill").apply { isDaemon = true }.start()
+        Thread({ backfill(attempts) }, "fixture-backfill").apply { isDaemon = true }.start()
     }
 
-    /** @return 받아 온 일정 수 */
-    fun backfill(): Int {
+    /** 못 받은 팀만 [maxAttempts]번까지 다시. @return 받아 온 일정 수 */
+    fun backfill(maxAttempts: Int = 1): Int {
+        var pending = Club.entries.toList()
         var total = 0
-        for (club in Club.entries) {
-            val list = runCatching { football.upcoming(club) }
-                .onFailure { log.warn("⚠️ [Backfill] {} 일정을 못 받았습니다: {}", club.id, it.message) }
-                .getOrNull() ?: continue
-            list.filter { it.matchId != null }.forEach {
-                fixtures.upsert(it.matchId!!, club.id, it.opponent, OffsetDateTime.parse(it.matchDate), it.isHome, it.tournament)
+        var delay = retryBaseMs
+        for (attempt in 1..maxAttempts) {
+            val last = attempt == maxAttempts
+            val failed = pending.filter { club ->
+                runCatching { total += load(club) }
+                    .onFailure { if (last) log.warn("⚠️ [Backfill] {} 일정을 못 받았습니다: {}", club.id, it.message) }
+                    .isFailure
             }
-            total += list.size
+            if (failed.isEmpty() || last) break
+            log.info("⏳ [Backfill] football-svc 연결 안 됨 ({}팀) — {}초 뒤 다시 ({}/{})", failed.size, delay / 1000, attempt, maxAttempts)
+            Thread.sleep(delay)
+            delay = (delay * 2).coerceAtMost(120_000)
+            pending = failed
         }
         log.info("✅ [Backfill] football-svc에서 일정 {}건을 받았습니다", total)
         return total
+    }
+
+    private fun load(club: Club): Int {
+        val list = football.upcoming(club)
+        list.filter { it.matchId != null }.forEach {
+            fixtures.upsert(it.matchId!!, club.id, it.opponent, OffsetDateTime.parse(it.matchDate), it.isHome, it.tournament)
+        }
+        return list.size
     }
 }
